@@ -1,647 +1,364 @@
+extensions [csv]
+
 globals [
-  oxygen          ; Niveau d'oxygène (mg/L)
-  pollution       ; Niveau de pollution (mg/L)
-  temperature     ; Température (°C)
-  extraction-rate ; Taux de prélèvement (normalisé, basé sur USGS)
-  plant-coverage  ; Couverture végétale (%)
-  reward          ; Récompense pour l'agent RL
-  current-step    ; Étape actuelle
-  max-steps       ; Nombre maximum d'étapes par épisode
-  total-reward    ; Récompense totale pour l'épisode
-  episode         ; Numéro de l'épisode
-  q-table         ; Table Q pour l'agent RL (simplifiée)
+  temperature
+  turbidity
+  oxygen
+  co2
+  ph
+  ammonia
+  alkalinity
+  nitrite
+  phosphorus
+  plankton
+  pollution
+  bod
+  h2s
+  dead-fish
+  fish-before
+  data-lines
+  current-line
+  plant-count
+  hardness
+  calcium
+  water-quality
+  action-count ;; Nouvelle variable pour suivre le nombre d'actions
+   living-fish
 ]
 
-breed [fishes fish]  ; Les poissons sont des agents
+breed [fishes fish]
+breed [plants plant]
 
-fishes-own [
-  energy  ; Énergie des poissons (pour simuler la survie)
-]
-
-; --- PARTIE 1 : MODÈLE DE L'ÉCOSYSTÈME ---
-; Ces procédures définissent les règles de l'écosystème (comment les variables évoluent)
-
-to apply-action-to-model [action]
-  ; Applique une action (choisie par l'agent RL) au modèle
-  if action = 0 [
-    ; Réduire la pollution
-    set pollution max 0 pollution - 1.0
-  ]
-  if action = 1 [
-    ; Réduire le prélèvement
-    set extraction-rate max 0 extraction-rate - 0.05
-  ]
-
-  ; La pollution augmente naturellement
-  set pollution max 0 pollution + 0.5
-end
-
-to update-ecosystem-model
-  ; Met à jour les variables de l'écosystème selon les règles
-  ; Fluctuation de la température
-  set temperature temperature + random-float 0.5 - 0.2
-
-  ; Mettre à jour l'oxygène
-  set oxygen max 0 oxygen - 0.2 * pollution - 0.1 * (temperature - 20) - 0.3 * extraction-rate
-
-  ; Mettre à jour la couverture végétale
-  set plant-coverage max 0 plant-coverage + 0.1 * (oxygen - 6) - 0.2 * extraction-rate
-end
-
-to update-fishes-in-model
-  ; Met à jour les poissons selon les conditions de l'écosystème
-  ask fishes [
-    set energy energy - 1
-    if oxygen < 4 or plant-coverage < 20 [
-      set energy energy - 10
-    ]
-    if oxygen > 6 and plant-coverage > 25 [
-      set energy energy + 5
-    ]
-    right random 360
-    forward 1
-    if energy <= 0 [
-      die
-    ]
-  ]
-end
-
-to-report calculate-reward-from-model
-  ; Calcule la récompense basée sur l'état de l'écosystème
-  let r (oxygen - 6) + (count fishes - 80) * 0.1 + (plant-coverage - 25) * 0.05
-  if pollution > 5 [
-    set r r - 5
-  ]
-  report r
-end
-
-to-report get-state-from-model
-  ; Retourne l'état actuel de l'écosystème
-  report (list oxygen pollution (count fishes) temperature plant-coverage)
-end
-
-; --- PARTIE 2 : AGENT RL ---
-; L'agent RL choisit des actions et apprend à maximiser la récompense
-
-to-report choose-action
-  let epsilon 0.1  ; Taux d'exploration
-  ifelse random-float 1 < epsilon [
-    report random 2  ; Exploration : choisir une action aléatoire (0 ou 1)
-  ] [
-    report max-one-of [0 1] [array:item q-table ?]  ; Exploitation : choisir la meilleure action
-  ]
-end
-
-to update-q-table [action r]
-  let learning-rate 0.1
-  let discount-factor 0.95
-  let current-q array:item q-table action
-  let next-max-q max [array:item q-table ?] [0 1]
-  let new-q current-q + learning-rate * (r + discount-factor * next-max-q - current-q)
-  array:set q-table action new-q
-end
-
-; --- PARTIE 3 : SIMULATION ---
-; La simulation exécute le modèle, interagit avec l'agent RL, et visualise les résultats
+fishes-own [health]
 
 to setup
   clear-all
-  reset-ticks
+  clear-output
+  set-default-shape fishes "fish"
+  setup-lake
 
-  ; Initialiser les variables globales
-  set oxygen 8.0
-  set pollution 5.0
-  set temperature 20.0
-  set extraction-rate 0.4  ; Basé sur les données USGS (par exemple, 200 MGD normalisé)
-  set plant-coverage 30.0
-  set current-step 0
-  set max-steps 100
-  set total-reward 0
-  set episode 1
+  ;; Lire les données CSV
+file-open "C:/Users/Hp/Desktop/AquaSim-Innovators/donnees_final_data.csv"
 
-  ; Initialiser la table Q pour l'agent RL
-  set q-table array:from-list n-values 2 [0]
+  set data-lines []
+  let line-count 0
+  while [not file-at-end?] [
+    let line file-read-line
+    if line-count > 0 [  ;; Ignore la première ligne (en-tête)
+      set data-lines lput (parse-csv-line line) data-lines
+    ]
+    set line-count line-count + 1
+  ]
+  file-close
 
-  ; Créer des poissons
+  set current-line 0
+  set dead-fish 0
+  set action-count 0 ;; Initialisation du compteur d'actions
+  set living-fish 0 ;; Initialisation du compteur de poissons vivants
+
+  ;; Créer les poissons
   create-fishes 100 [
     setxy random-xcor random-ycor
-    set color green
-    set energy 50
+    set color blue
+    set size 1.5
+    set health 100
+    set living-fish living-fish + 1 ;; Incrémenter le nombre de poissons vivants
+
   ]
 
-  ; Configurer les graphiques
-  setup-plots
+  ;; Créer les plantes
+  set plant-count 100
+  create-plants plant-count
+
+  reset-ticks
+end
+
+to-report parse-csv-line [line]
+  report csv:from-row line
 end
 
 to go
-  if current-step >= max-steps or count fishes = 0 [
-    end-episode
+  if current-line >= length data-lines [
+    show "Simulation terminée"
     stop
   ]
 
-  ; Étape 1 : L'agent RL choisit une action
-  let action choose-action
+  set fish-before count fishes
+  update-environment  ;; Exporte l’état dans env_state.csv
 
-  ; Étape 2 : Appliquer l'action au modèle
-  apply-action-to-model action
+  ;; Pause manuelle : affiche un message et attends que tu exécutes Python
+  show "Exécute 'python run_ppo.py' dans un terminal, puis clique sur Continuer."
+  user-message "Exécute 'python run_ppo.py' dans un terminal, puis clique OK pour continuer."
+  
+  wait-for-action "ppo_action.csv"  ;; Attend que ppo_action.csv soit créé
+  apply-ppo-action  ;; Applique l’action PPO
 
-  ; Étape 3 : Mettre à jour l'écosystème (modèle)
-  update-ecosystem-model
-  update-fishes-in-model
+  ask fishes [
+    move
+    evaluate-environment
+    search-for-plants
+  ]
 
-  ; Étape 4 : Obtenir l'état et la récompense
-  let state get-state-from-model
-  set reward calculate-reward-from-model
-
-  ; Étape 5 : Mettre à jour l'agent RL
-  update-q-table action reward
-
-  ; Étape 6 : Mettre à jour la simulation
-  set total-reward total-reward + reward
-  set current-step current-step + 1
-
-  ; Étape 7 : Visualiser
-  update-plots
+  set dead-fish dead-fish + (fish-before - count fishes)
+  grow-plants
+  set current-line current-line + 1
   tick
 end
 
-to end-episode
-  output-print (word "Épisode " episode " terminé. Récompense totale : " total-reward)
+to wait-for-action [filename]
+  let max-wait 30  ;; Temps maximum d’attente en secondes (ajuste si nécessaire)
+  let waited 0
+  while [not file-exists? filename and waited < max-wait] [
+    wait 0.1  ;; Vérifie toutes les 0.1 secondes
+    set waited waited + 0.1
+  ]
+  if not file-exists? filename [
+    show "Erreur : ppo_action.csv n’a pas été créé dans le temps imparti."
+    stop
+  ]
+end
 
-  ; Réinitialiser pour le prochain épisode
-  set episode episode + 1
-  set current-step 0
-  set total-reward 0
-  set oxygen 8.0
-  set pollution 5.0
-  set temperature 20.0
-  set extraction-rate 0.4
-  set plant-coverage 30.0
+to update-environment
+  let row item current-line data-lines
+  show (word "Processing Row " current-line ": " row)
 
-  create-fishes 100 [
-    setxy random-xcor random-ycor
-    set color green
-    set energy 50
+  let temp-csv read-number item 0 row
+  let turb-csv read-number item 1 row
+  let oxy-csv read-number item 2 row
+  let co2-csv read-number item 3 row
+  let ph-csv read-number item 5 row
+  let alk-csv read-number item 4 row
+  let amm-csv read-number item 6 row
+  let nit-csv read-number item 7 row
+  let phos-csv read-number item 8 row
+  let plank-csv read-number item 9 row
+  set water-quality item 10 row
+
+  set temperature temp-csv + (Temperature - temp-csv) * 0.1
+  set turbidity turb-csv
+  set oxygen oxy-csv + (Oxygen - oxy-csv) * 0.1
+  set co2 co2-csv + (CO2 - co2-csv) * 0.1
+  set ph ph-csv + (pH - ph-csv) * 0.1
+  set alkalinity alk-csv
+  set ammonia amm-csv + (Ammonia - amm-csv) * 0.1
+  set nitrite nit-csv + (Nitrite - nit-csv) * 0.1
+  set phosphorus phos-csv + (Phosphorus - phos-csv) * 0.1
+  set plankton plank-csv
+  set pollution Pollution
+
+  set bod 6
+  set hardness 0
+  set calcium 0
+  set h2s 0
+
+  ;; Export the environment state to CSV
+  let state-list (list turbidity temperature oxygen alkalinity ph ammonia phosphorus plankton nitrite co2)
+  csv:to-file "C:/Users/Hp/Desktop/AquaSim-Innovators/env_state.csv" (list state-list)
+
+  ;; Pollution check and handling
+  if pollution > 50 [
+    show "Pollution trop haute! Traitement de l'eau déclenché."
+    user-message "Alerte: Pollution trop haute! Traitement de l'eau déclenché."
+    set oxygen oxygen + 2
+  ]
+  if oxygen < 3 [
+    show "Alerte: Manque d’oxygène! Les poissons sont en danger."
+    user-message "Alerte: Manque d’oxygène!"
+    ask fishes [
+      set health health - 10
+      if health <= 0 [
+        die
+      ]
+      ;; Change color based on health status
+      if health < 20 [
+        set color red  ;; Fish turns red when health is low
+      ]
+      if health >= 20 and health < 50 [
+        set color orange  ;; Fish turns orange for moderate health
+      ]
+      if health >= 50 [
+        set color green  ;; Fish turns green when health is good
+      ]
+    ]
+  ]
+  if pollution > 80 [
+    show "Alerte: Pollution extrême! Les poissons meurent."
+    user-message "Alerte: Pollution extrême!"
+    ask fishes [
+      set health health - 20
+      if health <= 0 [
+        die
+      ]
+      ;; Color change when the fish is highly affected
+      if health < 20 [
+        set color red
+      ]
+    ]
+  ]
+  if temperature > 30 [
+    show "Température trop élevée! Risque de stress pour les poissons."
+    user-message "Alerte: Température trop élevée!"
+    set oxygen oxygen - 1
+    ask fishes [
+      set health health - 5  ;; Reduce fish health due to high temperature
+      if health < 20 [
+        set color orange  ;; Stress affects health, fish turns orange
+      ]
+    ]
+  ]
+end
+
+
+to-report read-number [x]
+  if is-number? x [ report x ]
+
+  if is-string? x [
+    if (x = "" or x = "NA") [ report 0 ]
+    let cleaned replace-comma-with-dot x
+    let number read-from-string cleaned
+    ifelse is-number? number [
+      report number
+    ] [
+      report 0
+    ]
   ]
 
-  reset-ticks
+  report 0
 end
 
-to setup-plots
-  set-current-plot "Écosystème"
-  set-current-plot-pen "oxygène"
-  set-plot-pen-color blue
-  set-current-plot-pen "pollution"
-  set-plot-pen-color red
-  set-current-plot-pen "poissons"
-  set-plot-pen-color green
-  set-current-plot-pen "température"
-  set-plot-pen-color orange
-  set-current-plot-pen "couverture-végétale"
-  set-plot-pen-color purple
-
-  set-current-plot "Récompense"
-  set-current-plot-pen "récompense"
-  set-plot-pen-color black
+to-report replace [old-char new-char str]
+  let result ""
+  let i 0
+  while [i < length str] [
+    ifelse (substring str i (i + 1)) = old-char [
+      set result (word result new-char)
+    ] [
+      set result (word result (substring str i (i + 1)))
+    ]
+    set i i + 1
+  ]
+  report result
 end
 
-to update-plots
-  set-current-plot "Écosystème"
-  set-current-plot-pen "oxygène"
-  plot oxygen
-  set-current-plot-pen "pollution"
-  plot pollution
-  set-current-plot-pen "poissons"
-  plot count fishes
-  set-current-plot-pen "température"
-  plot temperature
-  set-current-plot-pen "couverture-végétale"
-  plot plant-coverage
-
-  set-current-plot "Récompense"
-  set-current-plot-pen "récompense"
-  plot reward
+to-report replace-comma-with-dot [s]
+  if not is-string? s [ report "0" ]
+  report replace "," "." s
 end
-@#$#@#$#@
-GRAPHICS-WINDOW
-210
-10
-647
-448
--1
--1
-13.0
-1
-10
-1
-1
-1
-0
-1
-1
-1
--16
-16
--16
-16
-0
-0
-1
-ticks
-30.0
 
-BUTTON
-181
-29
-245
-62
-Setup
-setup
-NIL
-1
-T
-OBSERVER
-NIL
-S
-NIL
-NIL
-1
+to move
+  rt random-float 30 - random-float 30
+  fd 1
+end
+to setup-lake
+  ;; Initialisation des paramètres de l'environnement aquatique
+  set temperature 25
+  set turbidity 0
+  set oxygen 8
+  set co2 5
+  set ph 7
+  set ammonia 0.5
+  set nitrite 0.1
+  set phosphorus 0.3
+  set plankton 10
+  set pollution 56
+  set bod 5
+  set hardness 20
+  set calcium 15
+  set h2s 0
+end
+to evaluate-environment
+  let stress 0
+  if temperature > 25 [ set stress stress + (temperature - 25) * 0.5 ]
+  if oxygen < 6.5 [ set stress stress + (6.5 - oxygen) * 2 ]
+  if bod > 6 [ set stress stress + (bod - 6) ]
+  if ammonia > 1 [ set stress stress + (ammonia - 1) * 3 ]
+  if co2 > 10 [ set stress stress + (co2 - 10) * 0.5 ]
+  if turbidity > 50 [ set stress stress + (turbidity - 50) * 0.1 ]
+  if (ph < 6.5 or ph > 8.5) [ set stress stress + 5 ]
+  if h2s > 0.5 [ set stress stress + (h2s - 0.5) * 4 ]
+  if nitrite > 1 [ set stress stress + (nitrite - 1) * 2 ]
+  if phosphorus > 0.5 [ set stress stress + (phosphorus - 0.5) * 1.5 ]
 
-BUTTON
-666
-40
-729
-73
-Go
-go
-T
-1
-T
-OBSERVER
-NIL
-G
-NIL
-NIL
-1
+  set health health - stress
+  if health > 75 [ set color blue ]
+  if health <= 75 and health > 40 [ set color orange ]
+  if health <= 40 [ set color red ]
+  if health <= 0 [ die ]
+end
+to apply-ppo-action
+  let action-file "ppo_action.csv"
+  if file-exists? action-file [
+    let action-data csv:from-file action-file
+    let action read-number (item 0 (item 0 action-data))
+    show (word "Action PPO prédite : " action)
 
-@#$#@#$#@
-## WHAT IS IT?
+    if action = 1 [
+      set turbidity (turbidity - 5.0) if turbidity > 5.0 [set turbidity 0]
+      set ammonia (ammonia - 0.2) if ammonia > 0.2 [set ammonia 0]
+      set nitrite (nitrite - 0.3) if nitrite > 0.3 [set nitrite 0]
+      set co2 (co2 - 0.2) if co2 > 0.2 [set co2 0]
+      set oxygen (oxygen + 2)
+    ]
+    if action = 2 [
+      set alkalinity (alkalinity + 10.0) if alkalinity < 500 [set alkalinity 500]
+      set turbidity (turbidity + 2.0) if turbidity < 100 [set turbidity 100]
+      set ammonia (ammonia - 0.1) if ammonia > 0.1 [set ammonia 0]
+      set phosphorus (phosphorus - 0.05) if phosphorus > 0.05 [set phosphorus 0]
+      set nitrite (nitrite - 0.15) if nitrite > 0.15 [set nitrite 0]
+      set co2 (co2 + 0.8) if co2 < 15 [set co2 15]
+      set oxygen (oxygen + 0.8) if oxygen < 15 [set oxygen 15]
+    ]
+    if action = 3 [  ;; Action 3 : Introduction de nouveaux poissons
+      create-fishes 10 [
+        setxy random-xcor random-ycor
+        set color blue
+        set size 1.5
+        set health 100
+      ]
+      show "Nouvelle génération de poissons ajoutée!"
+    ]
+    if action = 4 [  ;; Action 4 : Ajustement de la température
+      set temperature (temperature + 2)  ;; Augmenter la température
+      show "Température augmentée!"
+    ]
+    if action = 5 [  ;; Action 5 : Ajustement du pH
+      if ph < 8.5 [   ;; Vérifie si le pH est inférieur à 8.5
+        set ph (ph + 0.5)  ;; Augmenter légèrement le pH
+        show "pH ajusté!"
+      ]
+    ]
+    if action = 6 [  ;; Action 6 : Ajustement de la dureté de l'eau
+      set hardness (hardness + 5)
+      show "Dureté de l'eau augmentée!"
+    ]
+    
+    file-delete action-file  ;; Supprime le fichier pour éviter les conflits au prochain tick
+  ]
+end
 
-(a general understanding of what the model is trying to show or explain)
+to search-for-plants
+  let nearest-plant one-of plants
+  if nearest-plant != nobody [
+    face nearest-plant
+    fd 0.5
+    if distance nearest-plant < 1 [
+      ask nearest-plant [
+        die  ;; Supprime la plante de l'environnement lorsque le poisson la mange
+      ]
+    ]
+  ]
+end
 
-## HOW IT WORKS
 
-(what rules the agents use to create the overall behavior of the model)
 
-## HOW TO USE IT
 
-(how to use the model, including a description of each of the items in the Interface tab)
 
-## THINGS TO NOTICE
 
-(suggested things for the user to notice while running the model)
-
-## THINGS TO TRY
-
-(suggested things for the user to try to do (move sliders, switches, etc.) with the model)
-
-## EXTENDING THE MODEL
-
-(suggested things to add or change in the Code tab to make the model more complicated, detailed, accurate, etc.)
-
-## NETLOGO FEATURES
-
-(interesting or unusual features of NetLogo that the model uses, particularly in the Code tab; or where workarounds were needed for missing features)
-
-## RELATED MODELS
-
-(models in the NetLogo Models Library and elsewhere which are of related interest)
-
-## CREDITS AND REFERENCES
-
-(a reference to the model's URL on the web if it has one, as well as any other necessary credits, citations, and links)
-@#$#@#$#@
-default
-true
-0
-Polygon -7500403 true true 150 5 40 250 150 205 260 250
-
-airplane
-true
-0
-Polygon -7500403 true true 150 0 135 15 120 60 120 105 15 165 15 195 120 180 135 240 105 270 120 285 150 270 180 285 210 270 165 240 180 180 285 195 285 165 180 105 180 60 165 15
-
-arrow
-true
-0
-Polygon -7500403 true true 150 0 0 150 105 150 105 293 195 293 195 150 300 150
-
-box
-false
-0
-Polygon -7500403 true true 150 285 285 225 285 75 150 135
-Polygon -7500403 true true 150 135 15 75 150 15 285 75
-Polygon -7500403 true true 15 75 15 225 150 285 150 135
-Line -16777216 false 150 285 150 135
-Line -16777216 false 150 135 15 75
-Line -16777216 false 150 135 285 75
-
-bug
-true
-0
-Circle -7500403 true true 96 182 108
-Circle -7500403 true true 110 127 80
-Circle -7500403 true true 110 75 80
-Line -7500403 true 150 100 80 30
-Line -7500403 true 150 100 220 30
-
-butterfly
-true
-0
-Polygon -7500403 true true 150 165 209 199 225 225 225 255 195 270 165 255 150 240
-Polygon -7500403 true true 150 165 89 198 75 225 75 255 105 270 135 255 150 240
-Polygon -7500403 true true 139 148 100 105 55 90 25 90 10 105 10 135 25 180 40 195 85 194 139 163
-Polygon -7500403 true true 162 150 200 105 245 90 275 90 290 105 290 135 275 180 260 195 215 195 162 165
-Polygon -16777216 true false 150 255 135 225 120 150 135 120 150 105 165 120 180 150 165 225
-Circle -16777216 true false 135 90 30
-Line -16777216 false 150 105 195 60
-Line -16777216 false 150 105 105 60
-
-car
-false
-0
-Polygon -7500403 true true 300 180 279 164 261 144 240 135 226 132 213 106 203 84 185 63 159 50 135 50 75 60 0 150 0 165 0 225 300 225 300 180
-Circle -16777216 true false 180 180 90
-Circle -16777216 true false 30 180 90
-Polygon -16777216 true false 162 80 132 78 134 135 209 135 194 105 189 96 180 89
-Circle -7500403 true true 47 195 58
-Circle -7500403 true true 195 195 58
-
-circle
-false
-0
-Circle -7500403 true true 0 0 300
-
-circle 2
-false
-0
-Circle -7500403 true true 0 0 300
-Circle -16777216 true false 30 30 240
-
-cow
-false
-0
-Polygon -7500403 true true 200 193 197 249 179 249 177 196 166 187 140 189 93 191 78 179 72 211 49 209 48 181 37 149 25 120 25 89 45 72 103 84 179 75 198 76 252 64 272 81 293 103 285 121 255 121 242 118 224 167
-Polygon -7500403 true true 73 210 86 251 62 249 48 208
-Polygon -7500403 true true 25 114 16 195 9 204 23 213 25 200 39 123
-
-cylinder
-false
-0
-Circle -7500403 true true 0 0 300
-
-dot
-false
-0
-Circle -7500403 true true 90 90 120
-
-face happy
-false
-0
-Circle -7500403 true true 8 8 285
-Circle -16777216 true false 60 75 60
-Circle -16777216 true false 180 75 60
-Polygon -16777216 true false 150 255 90 239 62 213 47 191 67 179 90 203 109 218 150 225 192 218 210 203 227 181 251 194 236 217 212 240
-
-face neutral
-false
-0
-Circle -7500403 true true 8 7 285
-Circle -16777216 true false 60 75 60
-Circle -16777216 true false 180 75 60
-Rectangle -16777216 true false 60 195 240 225
-
-face sad
-false
-0
-Circle -7500403 true true 8 8 285
-Circle -16777216 true false 60 75 60
-Circle -16777216 true false 180 75 60
-Polygon -16777216 true false 150 168 90 184 62 210 47 232 67 244 90 220 109 205 150 198 192 205 210 220 227 242 251 229 236 206 212 183
-
-fish
-false
-0
-Polygon -1 true false 44 131 21 87 15 86 0 120 15 150 0 180 13 214 20 212 45 166
-Polygon -1 true false 135 195 119 235 95 218 76 210 46 204 60 165
-Polygon -1 true false 75 45 83 77 71 103 86 114 166 78 135 60
-Polygon -7500403 true true 30 136 151 77 226 81 280 119 292 146 292 160 287 170 270 195 195 210 151 212 30 166
-Circle -16777216 true false 215 106 30
-
-flag
-false
-0
-Rectangle -7500403 true true 60 15 75 300
-Polygon -7500403 true true 90 150 270 90 90 30
-Line -7500403 true 75 135 90 135
-Line -7500403 true 75 45 90 45
-
-flower
-false
-0
-Polygon -10899396 true false 135 120 165 165 180 210 180 240 150 300 165 300 195 240 195 195 165 135
-Circle -7500403 true true 85 132 38
-Circle -7500403 true true 130 147 38
-Circle -7500403 true true 192 85 38
-Circle -7500403 true true 85 40 38
-Circle -7500403 true true 177 40 38
-Circle -7500403 true true 177 132 38
-Circle -7500403 true true 70 85 38
-Circle -7500403 true true 130 25 38
-Circle -7500403 true true 96 51 108
-Circle -16777216 true false 113 68 74
-Polygon -10899396 true false 189 233 219 188 249 173 279 188 234 218
-Polygon -10899396 true false 180 255 150 210 105 210 75 240 135 240
-
-house
-false
-0
-Rectangle -7500403 true true 45 120 255 285
-Rectangle -16777216 true false 120 210 180 285
-Polygon -7500403 true true 15 120 150 15 285 120
-Line -16777216 false 30 120 270 120
-
-leaf
-false
-0
-Polygon -7500403 true true 150 210 135 195 120 210 60 210 30 195 60 180 60 165 15 135 30 120 15 105 40 104 45 90 60 90 90 105 105 120 120 120 105 60 120 60 135 30 150 15 165 30 180 60 195 60 180 120 195 120 210 105 240 90 255 90 263 104 285 105 270 120 285 135 240 165 240 180 270 195 240 210 180 210 165 195
-Polygon -7500403 true true 135 195 135 240 120 255 105 255 105 285 135 285 165 240 165 195
-
-line
-true
-0
-Line -7500403 true 150 0 150 300
-
-line half
-true
-0
-Line -7500403 true 150 0 150 150
-
-pentagon
-false
-0
-Polygon -7500403 true true 150 15 15 120 60 285 240 285 285 120
-
-person
-false
-0
-Circle -7500403 true true 110 5 80
-Polygon -7500403 true true 105 90 120 195 90 285 105 300 135 300 150 225 165 300 195 300 210 285 180 195 195 90
-Rectangle -7500403 true true 127 79 172 94
-Polygon -7500403 true true 195 90 240 150 225 180 165 105
-Polygon -7500403 true true 105 90 60 150 75 180 135 105
-
-plant
-false
-0
-Rectangle -7500403 true true 135 90 165 300
-Polygon -7500403 true true 135 255 90 210 45 195 75 255 135 285
-Polygon -7500403 true true 165 255 210 210 255 195 225 255 165 285
-Polygon -7500403 true true 135 180 90 135 45 120 75 180 135 210
-Polygon -7500403 true true 165 180 165 210 225 180 255 120 210 135
-Polygon -7500403 true true 135 105 90 60 45 45 75 105 135 135
-Polygon -7500403 true true 165 105 165 135 225 105 255 45 210 60
-Polygon -7500403 true true 135 90 120 45 150 15 180 45 165 90
-
-sheep
-false
-15
-Circle -1 true true 203 65 88
-Circle -1 true true 70 65 162
-Circle -1 true true 150 105 120
-Polygon -7500403 true false 218 120 240 165 255 165 278 120
-Circle -7500403 true false 214 72 67
-Rectangle -1 true true 164 223 179 298
-Polygon -1 true true 45 285 30 285 30 240 15 195 45 210
-Circle -1 true true 3 83 150
-Rectangle -1 true true 65 221 80 296
-Polygon -1 true true 195 285 210 285 210 240 240 210 195 210
-Polygon -7500403 true false 276 85 285 105 302 99 294 83
-Polygon -7500403 true false 219 85 210 105 193 99 201 83
-
-square
-false
-0
-Rectangle -7500403 true true 30 30 270 270
-
-square 2
-false
-0
-Rectangle -7500403 true true 30 30 270 270
-Rectangle -16777216 true false 60 60 240 240
-
-star
-false
-0
-Polygon -7500403 true true 151 1 185 108 298 108 207 175 242 282 151 216 59 282 94 175 3 108 116 108
-
-target
-false
-0
-Circle -7500403 true true 0 0 300
-Circle -16777216 true false 30 30 240
-Circle -7500403 true true 60 60 180
-Circle -16777216 true false 90 90 120
-Circle -7500403 true true 120 120 60
-
-tree
-false
-0
-Circle -7500403 true true 118 3 94
-Rectangle -6459832 true false 120 195 180 300
-Circle -7500403 true true 65 21 108
-Circle -7500403 true true 116 41 127
-Circle -7500403 true true 45 90 120
-Circle -7500403 true true 104 74 152
-
-triangle
-false
-0
-Polygon -7500403 true true 150 30 15 255 285 255
-
-triangle 2
-false
-0
-Polygon -7500403 true true 150 30 15 255 285 255
-Polygon -16777216 true false 151 99 225 223 75 224
-
-truck
-false
-0
-Rectangle -7500403 true true 4 45 195 187
-Polygon -7500403 true true 296 193 296 150 259 134 244 104 208 104 207 194
-Rectangle -1 true false 195 60 195 105
-Polygon -16777216 true false 238 112 252 141 219 141 218 112
-Circle -16777216 true false 234 174 42
-Rectangle -7500403 true true 181 185 214 194
-Circle -16777216 true false 144 174 42
-Circle -16777216 true false 24 174 42
-Circle -7500403 false true 24 174 42
-Circle -7500403 false true 144 174 42
-Circle -7500403 false true 234 174 42
-
-turtle
-true
-0
-Polygon -10899396 true false 215 204 240 233 246 254 228 266 215 252 193 210
-Polygon -10899396 true false 195 90 225 75 245 75 260 89 269 108 261 124 240 105 225 105 210 105
-Polygon -10899396 true false 105 90 75 75 55 75 40 89 31 108 39 124 60 105 75 105 90 105
-Polygon -10899396 true false 132 85 134 64 107 51 108 17 150 2 192 18 192 52 169 65 172 87
-Polygon -10899396 true false 85 204 60 233 54 254 72 266 85 252 107 210
-Polygon -7500403 true true 119 75 179 75 209 101 224 135 220 225 175 261 128 261 81 224 74 135 88 99
-
-wheel
-false
-0
-Circle -7500403 true true 3 3 294
-Circle -16777216 true false 30 30 240
-Line -7500403 true 150 285 150 15
-Line -7500403 true 15 150 285 150
-Circle -7500403 true true 120 120 60
-Line -7500403 true 216 40 79 269
-Line -7500403 true 40 84 269 221
-Line -7500403 true 40 216 269 79
-Line -7500403 true 84 40 221 269
-
-wolf
-false
-0
-Polygon -16777216 true false 253 133 245 131 245 133
-Polygon -7500403 true true 2 194 13 197 30 191 38 193 38 205 20 226 20 257 27 265 38 266 40 260 31 253 31 230 60 206 68 198 75 209 66 228 65 243 82 261 84 268 100 267 103 261 77 239 79 231 100 207 98 196 119 201 143 202 160 195 166 210 172 213 173 238 167 251 160 248 154 265 169 264 178 247 186 240 198 260 200 271 217 271 219 262 207 258 195 230 192 198 210 184 227 164 242 144 259 145 284 151 277 141 293 140 299 134 297 127 273 119 270 105
-Polygon -7500403 true true -1 195 14 180 36 166 40 153 53 140 82 131 134 133 159 126 188 115 227 108 236 102 238 98 268 86 269 92 281 87 269 103 269 113
-
-x
-false
-0
-Polygon -7500403 true true 270 75 225 30 30 225 75 270
-Polygon -7500403 true true 30 75 75 30 270 225 225 270
-@#$#@#$#@
-NetLogo 6.4.0
-@#$#@#$#@
-@#$#@#$#@
-@#$#@#$#@
-@#$#@#$#@
-@#$#@#$#@
-default
-0.0
--0.2 0 0.0 1.0
-0.0 1 1.0 0.0
-0.2 0 0.0 1.0
-link direction
-true
-0
-Line -7500403 true 150 150 90 180
-Line -7500403 true 150 150 210 180
-@#$#@#$#@
-0
-@#$#@#$#@
+to grow-plants
+  if random 100 < 5 [
+    create-plants 1 [
+      setxy random-xcor random-ycor
+      set color green
+    ]
+  ]
+end
