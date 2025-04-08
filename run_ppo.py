@@ -1,21 +1,33 @@
 import numpy as np
-from stable_baselines3 import PPO
 import pandas as pd
+from stable_baselines3 import PPO
+import time
 
-# Charger le modèle PPO que tu as entraîné
+# Load the PPO model
 model = PPO.load("aqua_ppo_hybrid_model")
 
-# Lire l’état depuis le fichier CSV généré par NetLogo
-state_df = pd.read_csv("env_state.csv", header=None)
-state = state_df.values.flatten().astype(np.float32)  # [turbidity, temp, oxygen, alk, ph, ammonia, phos, plankton, nitrite, co2]
+# Read the environment state from CSV, using the first row as header
+state_df = pd.read_csv("C:/Users/Hp/Desktop/AquaSim-Innovators/env_state.csv")
 
-# Ajouter une valeur de qualité fictive (0) pour correspondre à l’espace d’observation du PPO (11 dimensions)
-full_state = np.append(state, 0).astype(np.float32)
+# Extract the data row (skip the header)
+state = state_df.iloc[0].values.astype(np.float32)  # 11 values
 
-# Prédire l’action avec le modèle PPO
+# Labels for display (10 environmental variables, excluding current_line)
+labels = ["Turbidité", "Température", "Oxygène", "Alcalinité", "pH", "Ammoniaque", "Phosphates", "Plancton", "Nitrites", "CO₂"]
+print("\n--- État actuel de l'eau ---")
+for label, value in zip(labels, state[:-1]):  # Exclude current_line
+    print(f"{label} : {value}")
+
+# Use state directly (no extra 0 appended)
+full_state = state.astype(np.float32)  # Shape: (11,)
+
+# Predict the action
 action, _ = model.predict(full_state, deterministic=True)
+print("\nAction prédite :", action)
 
-# Écrire l’action dans un fichier CSV
+# Save the action to ppo_action.csv
 pd.DataFrame([action]).to_csv("ppo_action.csv", index=False, header=False)
+print("Action sauvegardée dans 'ppo_action.csv'")
 
-print(f"Action prédite : {action}")
+# Optional delay (reduced for testing)
+time.sleep(1)
